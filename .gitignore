@@ -1,6 +1,7 @@
 # Don't upload the compiled Android test binaries
 *.bin
 *.test
+build
 
 # Don't upload local environment script setups or NDK paths
 .env

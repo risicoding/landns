@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/grandcat/zeroconf"
+	"github.com/wlynxg/anet"
 )
 
 type Node struct {
@@ -30,7 +32,7 @@ type Instance struct {
 }
 
 func (node *Node) Advertise(ctx context.Context, deviceAlias string) error {
-	infs, err := net.Interfaces()
+	infs, err := anet.Interfaces()
 	if err != nil {
 		return err
 	}
@@ -87,18 +89,12 @@ func (node *Node) Advertise(ctx context.Context, deviceAlias string) error {
 }
 
 func (node *Node) Discover() ([]Instance, error) {
-	// 1. Fetch local subnets to cross-match against
-	localNets, err := getLocalNetworks()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get local subnets: %w", err)
-	}
-
 	resolver, err := zeroconf.NewResolver(nil)
 	if err != nil {
 		return nil, fmt.Errorf("create mDNS resolver: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	entries := make(chan *zeroconf.ServiceEntry)
@@ -126,26 +122,12 @@ func (node *Node) Discover() ([]Instance, error) {
 				continue
 			}
 
-			// 2. Filter remote IPs: Must be IPv4 AND belong to a shared local subnet
-			var sharedIpv4 []net.IP
+			var ips []net.IP
 			for _, ip := range entry.AddrIPv4 {
 				ipv4 := ip.To4()
-				if ipv4 == nil {
-					continue
+				if ipv4 != nil {
+					ips = append(ips, ipv4)
 				}
-
-				// Verify if this remote IP lives on one of our networks
-				for _, localNet := range localNets {
-					if localNet.Contains(ipv4) {
-						sharedIpv4 = append(sharedIpv4, ipv4)
-						break // Found a matching subnet, skip to next IP
-					}
-				}
-			}
-
-			// If they don't share any common network subnets, ignore the device
-			if len(sharedIpv4) == 0 {
-				continue
 			}
 
 			key := fmt.Sprintf("%s|%s|%d", entry.Instance, entry.HostName, entry.Port)
@@ -158,22 +140,100 @@ func (node *Node) Discover() ([]Instance, error) {
 				Instance: entry.Instance,
 				Hostname: entry.HostName,
 				Port:     entry.Port,
-				Ipv4:     sharedIpv4, // Only contains reachable IPs
+				Ipv4:     ips, // Only contains reachable IPs
 			})
 		}
 	}
 }
 
+type FilteredInstance struct {
+	Hostname string `json:"hostname"`
+	Instance string `json:"instance"`
+	Ipv4     net.IP `json:"ip"`
+	Port     int    `json:"port"`
+}
+
+func (node *Node) DiscoverWithFiltered() ([]FilteredInstance, error) {
+	resp, err := node.Discover()
+	if err != nil {
+		return nil, err
+	}
+
+	instances := make(chan FilteredInstance)
+	var insWg sync.WaitGroup
+
+	for _, instance := range resp {
+		insWg.Add(1)
+		go func(ins Instance) {
+			defer insWg.Done()
+
+			var fastestIp net.IP
+			var fastestLatency time.Duration
+			found := false
+
+			var mu sync.Mutex
+			var ipWg sync.WaitGroup
+
+			for _, ipaddr := range ins.Ipv4 {
+				ipWg.Add(1)
+				go func(ip net.IP) {
+					defer ipWg.Done()
+					latency, err := Ping(ip.String())
+					if err != nil {
+						return
+					}
+
+					mu.Lock()
+					if !found || latency < fastestLatency {
+						fastestIp = ip
+						fastestLatency = latency
+						found = true
+					}
+					mu.Unlock()
+				}(ipaddr)
+			}
+
+			ipWg.Wait()
+			if !found {
+				return
+			}
+
+			instances <- FilteredInstance{
+				Hostname: ins.Hostname,
+				Instance: ins.Instance,
+				Ipv4:     fastestIp,
+				Port:     ins.Port,
+			}
+		}(instance)
+	}
+
+	go func() {
+		insWg.Wait()
+		close(instances)
+	}()
+
+	var filteredInstances []FilteredInstance
+	for ins := range instances {
+		filteredInstances = append(filteredInstances, ins)
+	}
+
+	return filteredInstances, nil
+}
+
+func init() {
+	anet.SetAndroidVersion(14)
+}
+
 func getLocalNetworks() ([]*net.IPNet, error) {
-	infs, err := net.Interfaces()
+	infs, err := anet.Interfaces()
 	if err != nil {
 		return nil, err
 	}
 
 	var nets []*net.IPNet
+
 	for _, inf := range infs {
-		// Skip down, loopback, and virtual interfaces
-		if (inf.Flags&net.FlagUp) == 0 || inf.Name == "lo" || inf.Name == "docker0" || strings.Contains(inf.Name, "ccmni") {
+		if (inf.Flags&net.FlagUp) == 0 || inf.Name == "lo" || inf.Name == "docker0" || strings.Contains(inf.Name, "dummy") || strings.Contains(inf.Name, "ccmni") {
 			continue
 		}
 		addrs, err := inf.Addrs()
@@ -188,5 +248,6 @@ func getLocalNetworks() ([]*net.IPNet, error) {
 			}
 		}
 	}
+
 	return nets, nil
 }
