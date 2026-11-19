@@ -2,7 +2,6 @@ package landns
 
 import (
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/influxdata/go-ping"
@@ -19,13 +18,10 @@ func Ping(ip string) (time.Duration, error) {
 	pinger.Count = 4
 	pinger.Timeout = 3 * time.Second
 
-	fmt.Printf("Starting pinger run\n")
 	pinger.Run()
 
 	stats := pinger.Statistics()
-	fmt.Printf("%+v\n", stats)
 	if stats.PacketsRecv == 0 {
-		fmt.Printf("0 Packets recieved\n")
 		return 0, ErrNoResponse
 	}
 

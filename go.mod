@@ -5,7 +5,6 @@ go 1.27.2
 require (
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/influxdata/go-ping v0.0.0-20181106165434-ef3ab45e41b0
-	github.com/wlynxg/anet v0.0.5
 )
 
 require (

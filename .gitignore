@@ -2,6 +2,7 @@
 *.bin
 *.test
 build
+.logs
 
 # Don't upload local environment script setups or NDK paths
 .env

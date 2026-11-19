@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/risicoding/landns"
@@ -11,10 +12,15 @@ import (
 )
 
 func main() {
+	if len(os.Args) <= 1 {
+		fmt.Printf("Device Alias required\n\nUsage : command [deviceAlias]\n")
+		return
+	}
+
 	fmt.Println("=== Starting landns Android ARM64 Test Binary ===")
 
 	serviceName := "termux-landns-bin"
-	deviceAlias := "android-arm64-binary"
+	deviceAlias := os.Args[1]
 	bindPort := 9099
 
 	// 1. Use your actual package types and constructor
@@ -31,19 +37,30 @@ func main() {
 	}()
 
 	fmt.Printf("Broadcasting service _%s._tcp via landns package...\n", serviceName)
+	fmt.Printf("Broadcasting device %s\n", deviceAlias)
 	time.Sleep(2000 * time.Millisecond)
 
-	// 3. Fire up the package's discovery scanning engine
-	fmt.Println("Scanning for matching network devices via package...")
-	instances, err := node.Discover()
-	if err != nil {
-		log.Fatalf("Discovery process failed: %v", err)
-	}
+	ticker := time.NewTicker(1 * time.Second)
 
-	// 4. Output the results returned directly by your package logic
-	fmt.Printf("Scan completed. Found %d matching instances:\n", len(instances))
-	for _, inst := range instances {
-		fmt.Printf(" -> Name: %s | Host: %s | Port: %d | Reachable IPs: %v\n",
-			inst.Instance, inst.Hostname, inst.Port, inst.Ipv4)
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Printf("Shutting down test\n")
+		case <-ticker.C:
+			{
+				fmt.Println("Scanning for matching network devices via package...")
+				instances, err := node.DiscoverWithFiltered()
+				if err != nil {
+					log.Fatalf("Discovery process failed: %v", err)
+				}
+
+				// 4. Output the results returned directly by your package logic
+				fmt.Printf("Scan completed. Found %d matching instances:\n", len(instances))
+				for _, inst := range instances {
+					fmt.Printf(" -> Name: %s | Host: %s | Port: %d | Reachable IPs: %v | Latency: %v\n",
+						inst.Instance, inst.Hostname, inst.Port, inst.Ipv4, inst.Latency)
+				}
+			}
+		}
 	}
 }

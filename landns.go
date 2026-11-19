@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/grandcat/zeroconf"
-	"github.com/wlynxg/anet"
 )
 
 type Node struct {
@@ -32,37 +31,9 @@ type Instance struct {
 }
 
 func (node *Node) Advertise(ctx context.Context, deviceAlias string) error {
-	infs, err := anet.Interfaces()
+	interfaces, err := getFilteredInterfaces()
 	if err != nil {
 		return err
-	}
-
-	var interfaces []net.Interface
-
-	for _, inf := range infs {
-		// Skip down, loopback, docker, or telephony interfaces
-		if (inf.Flags&net.FlagUp) == 0 || inf.Name == "lo" || inf.Name == "docker0" || strings.Contains(inf.Name, "ccmni") {
-			continue
-		}
-
-		addrs, err := inf.Addrs()
-		if err != nil {
-			continue
-		}
-
-		hasIpv4 := false
-		for _, addr := range addrs {
-			if ipNet, ok := addr.(*net.IPNet); ok {
-				if ipv4 := ipNet.IP.To4(); ipv4 != nil {
-					hasIpv4 = true
-					break
-				}
-			}
-		}
-
-		if hasIpv4 {
-			interfaces = append(interfaces, inf)
-		}
 	}
 
 	// If no specific interfaces matched, pass nil so zeroconf defaults cleanly
@@ -147,10 +118,11 @@ func (node *Node) Discover() ([]Instance, error) {
 }
 
 type FilteredInstance struct {
-	Hostname string `json:"hostname"`
-	Instance string `json:"instance"`
-	Ipv4     net.IP `json:"ip"`
-	Port     int    `json:"port"`
+	Hostname string        `json:"hostname"`
+	Instance string        `json:"instance"`
+	Ipv4     net.IP        `json:"ip"`
+	Port     int           `json:"port"`
+	Latency  time.Duration `json:"latency"`
 }
 
 func (node *Node) DiscoverWithFiltered() ([]FilteredInstance, error) {
@@ -203,6 +175,7 @@ func (node *Node) DiscoverWithFiltered() ([]FilteredInstance, error) {
 				Instance: ins.Instance,
 				Ipv4:     fastestIp,
 				Port:     ins.Port,
+				Latency:  fastestLatency,
 			}
 		}(instance)
 	}
@@ -220,12 +193,45 @@ func (node *Node) DiscoverWithFiltered() ([]FilteredInstance, error) {
 	return filteredInstances, nil
 }
 
-func init() {
-	anet.SetAndroidVersion(14)
+func getFilteredInterfaces() ([]net.Interface, error) {
+	infs, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("cant access interfaces %w", err)
+	}
+
+	var interfaces []net.Interface
+
+	for _, inf := range infs {
+		// Skip down, loopback, docker, or telephony interfaces
+		if (inf.Flags&net.FlagUp) == 0 || inf.Name == "lo" || inf.Name == "docker0" || strings.Contains(inf.Name, "ccmni") {
+			continue
+		}
+
+		addrs, err := inf.Addrs()
+		if err != nil {
+			return nil, fmt.Errorf("cant get addresses for inf name: %s error: %w", inf.Name, err)
+		}
+
+		hasIpv4 := false
+		for _, addr := range addrs {
+			if ipNet, ok := addr.(*net.IPNet); ok {
+				if ipv4 := ipNet.IP.To4(); ipv4 != nil {
+					hasIpv4 = true
+					break
+				}
+			}
+		}
+
+		if hasIpv4 {
+			interfaces = append(interfaces, inf)
+		}
+	}
+
+	return interfaces, nil
 }
 
 func getLocalNetworks() ([]*net.IPNet, error) {
-	infs, err := anet.Interfaces()
+	infs, err := net.Interfaces()
 	if err != nil {
 		return nil, err
 	}
